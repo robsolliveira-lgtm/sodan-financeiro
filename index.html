@@ -708,38 +708,72 @@ function loadSheet(){
   document.getElementById('prev-tbl').innerHTML=`<table><thead><tr>${headers.map(h=>`<th>${h||''}</th>`).join('')}</tr></thead><tbody>${prev.map(row=>`<tr>${headers.map((_,i)=>`<td>${row[i]!==undefined?row[i]:''}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
 }
 async function doImport(){
-  if(!wbG){alert('Nenhum arquivo carregado.');return;}
-  const sn=document.getElementById('imp-aba').value;
-  const hr=parseInt(document.getElementById('imp-hdr').value);
-  const tipo=document.getElementById('imp-tipo').value;
-  const isR=tipo==='receita';
-  const ws=wbG.Sheets[sn];
-  const data=XLSX.utils.sheet_to_json(ws,{header:1,raw:true});
-  const rows=data.slice(hr+1).filter(r=>r&&r.some(c=>c!==undefined&&c!==''));
-  const gi=k=>{const v=document.getElementById('mp-'+k).value;return parseInt(v);};
-  const gv=(row,k)=>{const i=gi(k);return i>=0?row[i]:undefined;};
-  const batch=[];let skip=0;
-  rows.forEach(row=>{
-    const val=parseVal(gv(row,'val'));
-    if(!val){skip++;return;}
-    const desc=String(gv(row,'desc')||'').trim()||'(sem descrição)';
-    const cat=String(gv(row,'cat')||'').trim()||'Importado';
-    const dataLanc=parseDate(gv(row,'data'));
-    const venc=parseDate(gv(row,'venc'));
-    const forma=String(gv(row,'forma')||'').trim();
-    const sRaw=String(gv(row,'status')||'').toLowerCase().trim();
-    const isBaixado=isR?sRaw.includes('receb'):(sRaw.includes('pago')||sRaw.includes('paid'));
-    batch.push({user_id:currentUser.id,descricao:desc,cat,val,data:dataLanc,vencimento:venc,tipo,forma,baixado:isBaixado,data_baixa:isBaixado?(dataLanc||hoje.toISOString().slice(0,10)):null});
-  });
-  if(!batch.length){alert('Nenhum registro válido encontrado.');return;}
-  sync(true);
-  const{error}=await sb.from('lancamentos').insert(batch);
-  sync(false);
-  if(error){alert('Erro ao importar: '+error.message);return;}
-  await loadAll();
-  const r=document.getElementById('imp-res');
-  r.textContent=`✓ ${batch.length} registros importados${skip?' ('+skip+' ignorados)':''}!`;
-  setTimeout(()=>r.textContent='',5000);
+  try{
+    if(!wbG){alert('Nenhum arquivo carregado. Selecione um arquivo .xlsx primeiro.');return;}
+    if(!currentUser){alert('Você precisa estar logado para importar.');return;}
+    const sn=document.getElementById('imp-aba').value;
+    const hr=parseInt(document.getElementById('imp-hdr').value);
+    const tipo=document.getElementById('imp-tipo').value;
+    const isR=tipo==='receita';
+    const ws=wbG.Sheets[sn];
+    const data=XLSX.utils.sheet_to_json(ws,{header:1,raw:true});
+    const rows=data.slice(hr+1).filter(r=>r&&r.some(c=>c!==undefined&&c!==''));
+    if(!rows.length){alert('Nenhuma linha de dados encontrada na planilha.');return;}
+    const gi=k=>{const el=document.getElementById('mp-'+k);if(!el)return -1;return parseInt(el.value);};
+    const gv=(row,k)=>{const i=gi(k);return i>=0?row[i]:undefined;};
+    const batch=[];let skip=0;
+    rows.forEach(row=>{
+      const val=parseVal(gv(row,'val'));
+      if(!val){skip++;return;}
+      const desc=String(gv(row,'desc')||'').trim()||'(sem descrição)';
+      const cat=String(gv(row,'cat')||'').trim()||'Importado';
+      const dataLanc=parseDate(gv(row,'data'));
+      const venc=parseDate(gv(row,'venc'));
+      const forma=String(gv(row,'forma')||'').trim();
+      const sRaw=String(gv(row,'status')||'').toLowerCase().trim();
+      const isBaixado=isR?sRaw.includes('receb'):(sRaw.includes('pago')||sRaw.includes('paid'));
+      batch.push({
+        user_id:currentUser.id,
+        descricao:desc,
+        cat:cat,
+        val:val,
+        data:dataLanc||null,
+        vencimento:venc||null,
+        tipo:tipo,
+        forma:forma||null,
+        baixado:isBaixado,
+        data_baixa:isBaixado?(dataLanc||hoje.toISOString().slice(0,10)):null
+      });
+    });
+    if(!batch.length){alert('Nenhum registro válido encontrado. Verifique se a coluna "Valor" está mapeada corretamente.');return;}
+    const r=document.getElementById('imp-res');
+    r.style.color='var(--amber)';
+    r.textContent=`Importando ${batch.length} registros...`;
+    sync(true);
+    // Inserir em lotes de 50 para evitar timeout
+    let totalOk=0;
+    for(let i=0;i<batch.length;i+=50){
+      const lote=batch.slice(i,i+50);
+      const{error}=await sb.from('lancamentos').insert(lote);
+      if(error){
+        sync(false);
+        alert('Erro ao importar lote '+(Math.floor(i/50)+1)+': '+error.message+'\n\nVerifique se as tabelas foram criadas corretamente no Supabase.');
+        r.textContent='';
+        return;
+      }
+      totalOk+=lote.length;
+      r.textContent=`Importando... ${totalOk}/${batch.length}`;
+    }
+    sync(false);
+    await loadAll();
+    r.style.color='var(--green)';
+    r.textContent=`✓ ${totalOk} registros importados com sucesso${skip?' ('+skip+' linhas ignoradas por valor vazio)':''}!`;
+    setTimeout(()=>{r.textContent='';r.style.color='var(--green)';},6000);
+  }catch(err){
+    sync(false);
+    alert('Erro inesperado: '+err.message);
+    console.error(err);
+  }
 }
 function resetImp(){
   wbG=null;
